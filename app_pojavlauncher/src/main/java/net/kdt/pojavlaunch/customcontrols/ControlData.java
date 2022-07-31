@@ -3,7 +3,6 @@ package net.kdt.pojavlaunch.customcontrols;
 import android.util.*;
 
 import java.lang.ref.WeakReference;
-import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
 import java.util.*;
 import net.kdt.pojavlaunch.*;
@@ -38,10 +37,9 @@ public class ControlData {
     public boolean isHideable;
 
     private static WeakReference<ExpressionBuilder> builder = new WeakReference<>(null);
-    private static WeakReference<Field> expression = new WeakReference<>(null);
     private static WeakReference<ArrayMap<String , String>> conversionMap = new WeakReference<>(null);
     static {
-        bypassExpressionBuilder();
+        buildExpressionBuilder();
         buildConversionMap();
     }
 
@@ -230,11 +228,9 @@ public class ControlData {
     }
 
     /**
-     * Create a weak reference to a builder and its expression field.
-     * Although VERY bad practice it isn't slower due to saved GC time.
-     * The normal way requires us to create ONE builder and TWO functions for EACH button.
+     * Create a builder, keep a weak reference to it to use it with all views on first inflation
      */
-    private static void bypassExpressionBuilder(){
+    private static void buildExpressionBuilder(){
         ExpressionBuilder expressionBuilder = new ExpressionBuilder("1 + 1")
                 .function(new Function("dp", 1) {
                     @Override
@@ -249,13 +245,6 @@ public class ControlData {
                     }
                 });
         builder = new WeakReference<>(expressionBuilder);
-        try {
-            expression = new WeakReference<>(builder.get().getClass().getDeclaredField("expression"));
-            expression.get().setAccessible(true);
-            expression.get().set(expression.get(), expression.get().getModifiers() & ~Modifier.FINAL);
-        }catch (Exception e){
-            e.printStackTrace();
-        }
     }
 
     /**
@@ -263,10 +252,8 @@ public class ControlData {
      * @param stringExpression the expression to set.
      */
     private static void setExpression(String stringExpression){
-        if(builder.get() == null) bypassExpressionBuilder();
-        try {
-            expression.get().set(builder.get(), stringExpression);
-        }catch (IllegalAccessException e){}
+        if(builder.get() == null) buildExpressionBuilder();
+        builder.get().expression(stringExpression);
     }
 
     /**
@@ -282,8 +269,8 @@ public class ControlData {
         keyValueMap.put("bottom", "DUMMY_BOTTOM");
         keyValueMap.put("width", "DUMMY_WIDTH");
         keyValueMap.put("height", "DUMMY_HEIGHT");
-        keyValueMap.put("screen_width", Integer.toString(CallbackBridge.physicalWidth));
-        keyValueMap.put("screen_height", Integer.toString(CallbackBridge.physicalHeight));
+        keyValueMap.put("screen_width", "DUMMY_DATA" );
+        keyValueMap.put("screen_height", "DUMMY_DATA");
         keyValueMap.put("margin", Integer.toString((int) Tools.dpToPx(2)));
         keyValueMap.put("preferred_scale", Float.toString(LauncherPreferences.PREF_BUTTONSIZE));
 
@@ -306,6 +293,8 @@ public class ControlData {
         valueMap.put("bottom", Float.toString(CallbackBridge.physicalHeight - getHeight()));
         valueMap.put("width", Float.toString(getWidth()));
         valueMap.put("height", Float.toString(getHeight()));
+        valueMap.put("screen_width",Integer.toString(CallbackBridge.physicalWidth));
+        valueMap.put("screen_height",Integer.toString(CallbackBridge.physicalHeight));
 
         return valueMap;
     }

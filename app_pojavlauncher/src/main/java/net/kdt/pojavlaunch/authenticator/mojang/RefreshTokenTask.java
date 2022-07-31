@@ -39,6 +39,9 @@ public class RefreshTokenTask extends AsyncTask<String, Void, Throwable> {
     public Throwable doInBackground(String... args) {
         try {
             this.profilePath = MinecraftAccount.load(args[0]);
+            if(profilePath == null) {
+                return new NullPointerException();
+            }
             int responseCode = 400;
             try {
                 responseCode = this.authenticator.validate(profilePath.accessToken).statusCode;
@@ -52,7 +55,7 @@ public class RefreshTokenTask extends AsyncTask<String, Void, Throwable> {
                 } else if (response.selectedProfile == null) {
                     throw new IllegalArgumentException("Can't refresh a demo account!");
                 }
-                
+
                 profilePath.clientToken = response.clientToken.toString();
                 profilePath.accessToken = response.accessToken;
                 profilePath.username = response.selectedProfile.name;
@@ -76,4 +79,3 @@ public class RefreshTokenTask extends AsyncTask<String, Void, Throwable> {
         }
     }
 }
-

@@ -1,5 +1,7 @@
 package net.kdt.pojavlaunch.multirt;
 
+import static org.apache.commons.io.FileUtils.listFiles;
+
 import android.content.Context;
 import android.system.Os;
 import android.util.Log;
@@ -21,6 +23,7 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 
@@ -72,18 +75,14 @@ public class MultiRTUtils {
         return result;
     }
 
-    public static void installRuntimeNamed(InputStream runtimeInputStream, String name, RuntimeProgressReporter progressReporter) throws IOException {
+    public static void installRuntimeNamed(String nativeLibDir, InputStream runtimeInputStream, String name, RuntimeProgressReporter progressReporter) throws IOException {
         File dest = new File(RUNTIME_FOLDER,"/"+name);
-        File tmp = new File(dest,"temporary");
         if(dest.exists()) FileUtils.deleteDirectory(dest);
         dest.mkdirs();
-        FileOutputStream fos = new FileOutputStream(tmp);
-        progressReporter.reportStringProgress(R.string.multirt_progress_caching);
-        IOUtils.copy(runtimeInputStream,fos);
-        fos.close();
+
+        uncompressTarXZ(runtimeInputStream,dest,progressReporter);
         runtimeInputStream.close();
-        uncompressTarXZ(tmp,dest,progressReporter);
-        tmp.delete();
+        unpack200(nativeLibDir,RUNTIME_FOLDER + "/" + name);
         read(name);
     }
 
@@ -103,7 +102,7 @@ public class MultiRTUtils {
         copyDummyNativeLib(ctx,"libawt_xawt.so", dest, libFolder);
     }
 
-    public static Runtime installRuntimeNamedBinpack(InputStream universalFileInputStream, InputStream platformBinsInputStream, String name, String binpackVersion, RuntimeProgressReporter thingy) throws IOException {
+    public static Runtime installRuntimeNamedBinpack(String nativeLibDir, InputStream universalFileInputStream, InputStream platformBinsInputStream, String name, String binpackVersion, RuntimeProgressReporter thingy) throws IOException {
         File dest = new File(RUNTIME_FOLDER,"/"+name);
         if(dest.exists()) FileUtils.deleteDirectory(dest);
         dest.mkdirs();
@@ -113,9 +112,13 @@ public class MultiRTUtils {
         FileOutputStream fos = new FileOutputStream(binpack_verfile);
         fos.write(binpackVersion.getBytes());
         fos.close();
+
+        unpack200(nativeLibDir,RUNTIME_FOLDER + "/" + name);
+
         sCache.remove(name); // Force reread
         return read(name);
     }
+
 
     public static String __internal__readBinpackVersion(String name) {
         File binpack_verfile = new File(RUNTIME_FOLDER,"/"+name+"/pojav_version");
@@ -188,6 +191,29 @@ public class MultiRTUtils {
         return returnRuntime;
     }
 
+    /**
+     * Unpacks all .pack files into .jar
+     * @param nativeLibraryDir The native lib path, required to execute the unpack200 binary
+     * @param runtimePath The path to the runtime to walk into
+     */
+    private static void unpack200(String nativeLibraryDir, String runtimePath) {
+
+        File basePath = new File(runtimePath);
+        Collection<File> files = listFiles(basePath, new String[]{"pack"}, true);
+
+        File workdir = new File(nativeLibraryDir);
+
+        ProcessBuilder processBuilder = new ProcessBuilder().directory(workdir);
+        for(File jarFile : files){
+            try{
+                Process process = processBuilder.command("./libunpack200.so", "-r", jarFile.getAbsolutePath(), jarFile.getAbsolutePath().replace(".pack", "")).start();
+                process.waitFor();
+            }catch (InterruptedException | IOException e) {
+                Log.e("MULTIRT", "Failed to unpack the runtime !");
+            }
+        }
+    }
+
     private static void copyDummyNativeLib(Context ctx, String name, File dest, String libFolder) throws IOException {
         File fileLib = new File(dest, "/"+libFolder + "/" + name);
         fileLib.delete();
@@ -199,25 +225,16 @@ public class MultiRTUtils {
     }
 
     private static void installRuntimeNamedNoRemove(InputStream runtimeInputStream, File dest, RuntimeProgressReporter progressReporter) throws IOException {
-        File tmp = new File(dest,"temporary");
-        FileOutputStream fos = new FileOutputStream(tmp);
-        progressReporter.reportStringProgress(R.string.multirt_progress_caching);
-        IOUtils.copy(runtimeInputStream,fos);
-        fos.close();
+
+        uncompressTarXZ(runtimeInputStream,dest,progressReporter);
         runtimeInputStream.close();
-        uncompressTarXZ(tmp,dest,progressReporter);
-        tmp.delete();
     }
 
-    private static void uncompressTarXZ(final File tarFile, final File dest, final RuntimeProgressReporter thingy) throws IOException {
+    private static void uncompressTarXZ(final InputStream tarFileInputStream, final File dest, final RuntimeProgressReporter thingy) throws IOException {
         dest.mkdirs();
 
         TarArchiveInputStream tarIn = new TarArchiveInputStream(
-                new XZCompressorInputStream(
-                        new BufferedInputStream(
-                                new FileInputStream(tarFile)
-                        )
-                )
+                new XZCompressorInputStream(tarFileInputStream)
         );
         TarArchiveEntry tarEntry = tarIn.getNextTarEntry();
         // tarIn is a TarArchiveInputStream

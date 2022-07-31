@@ -6,6 +6,7 @@ import static net.kdt.pojavlaunch.prefs.LauncherPreferences.PREF_HIDE_SIDEBAR;
 import static net.kdt.pojavlaunch.prefs.LauncherPreferences.PREF_NOTCH_SIZE;
 
 import android.animation.ValueAnimator;
+import android.content.Context;
 import android.content.res.Configuration;
 import android.graphics.Color;
 import android.graphics.Typeface;
@@ -37,9 +38,15 @@ import net.kdt.pojavlaunch.fragments.CrashFragment;
 import net.kdt.pojavlaunch.fragments.LauncherFragment;
 import net.kdt.pojavlaunch.prefs.LauncherPreferences;
 import net.kdt.pojavlaunch.prefs.screens.LauncherPreferenceFragment;
+import net.kdt.pojavlaunch.profiles.ProfileAdapter;
+import net.kdt.pojavlaunch.extra.ExtraConstants;
+import net.kdt.pojavlaunch.profiles.ProfileEditor;
+import net.kdt.pojavlaunch.profiles.ProfileIconCache;
 import net.kdt.pojavlaunch.value.MinecraftAccount;
+import net.kdt.pojavlaunch.value.launcherprofiles.LauncherProfiles;
 
 import java.io.File;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -82,6 +89,14 @@ public class PojavLauncherActivity extends BaseLauncherActivity
     }
 
     @Override
+    protected void onDestroy() {
+        ExtraCore.removeExtraListenerFromValue(ExtraConstants.BACK_PREFERENCE, backPreferenceListener);
+        super.onDestroy();
+        ProfileIconCache.clearIconCache();
+        Log.i("LauncherActivity","Destroyed!");
+    }
+
+    @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_pojav_launcher);
@@ -115,7 +130,7 @@ public class PojavLauncherActivity extends BaseLauncherActivity
                 setTabActive(position);
             }
         });
-        initTabs(0);
+
 
         //Setup listener to the backPreference system
         backPreferenceListener = (key, value) -> {
@@ -125,7 +140,7 @@ public class PojavLauncherActivity extends BaseLauncherActivity
             }
             return false;
         };
-        ExtraCore.addExtraListener("back_preference", backPreferenceListener);
+        ExtraCore.addExtraListener(ExtraConstants.BACK_PREFERENCE, backPreferenceListener);
 
 
         // Try to load the temporary account
@@ -174,31 +189,41 @@ public class PojavLauncherActivity extends BaseLauncherActivity
         });
 
         // Setup the minecraft version list
-        List<String> versions = new ArrayList<>();
-        final File fVers = new File(Tools.DIR_HOME_VERSION);
-
-        try {
-            if (fVers.listFiles().length < 1) {
-                throw new Exception(getString(R.string.error_no_version));
-            }
-
-            for (File fVer : fVers.listFiles()) {
-                if (fVer.isDirectory())
-                    versions.add(fVer.getName());
-            }
-        } catch (Exception e) {
-            versions.add(getString(R.string.global_error) + ":");
-            versions.add(e.getMessage());
-
-        } finally {
-            mAvailableVersions = versions.toArray(new String[0]);
-        }
+        setupBasicList(this);
 
         //mAvailableVersions;
-        ArrayAdapter<String> adapterVer = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, mAvailableVersions);
-        adapterVer.setDropDownViewResource(android.R.layout.simple_list_item_single_choice);
-        mVersionSelector.setAdapter(adapterVer);
+            ProfileAdapter profileAdapter = new ProfileAdapter(this, true);
+            ProfileEditor profileEditor = new ProfileEditor(this,(name, isNew, deleting)->{
+                LauncherProfiles.update();
+                profileAdapter.notifyDataSetChanged();
+                if(isNew) {
+                    int newPosition = profileAdapter.resolveProfileIndex(name);
+                    setProfileSelection(newPosition);
+                    return;
+                }
+                if(deleting) {
+                    setProfileSelection(0);
+                }
 
+            });
+            mVersionSelector.setOnLongClickListener((v)->profileEditor.show(LauncherPreferences.DEFAULT_PREF.getString(LauncherPreferences.PREF_KEY_CURRENT_PROFILE,"")));
+            mVersionSelector.setAdapter(profileAdapter);
+            mVersionSelector.setSelection(profileAdapter.resolveProfileIndex(LauncherPreferences.DEFAULT_PREF.getString(LauncherPreferences.PREF_KEY_CURRENT_PROFILE,"")));
+            mVersionSelector.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener(){
+                @Override
+                public void onItemSelected(AdapterView<?> p1, View p2, int p3, long p4) {
+                    String profileName = p1.getItemAtPosition(p3).toString();
+                    if(profileName.equals(ProfileAdapter.CREATE_PROFILE_MAGIC)) {
+                        profileEditor.show(profileName);
+                        mVersionSelector.setSelection(0);
+                        return;
+                    }
+                    setProfileSelection(p3);
+                }
+                @Override
+                public void onNothingSelected(AdapterView<?> p1){/* TODO: Implement this method*/}
+            });
+        //
         statusIsLaunching(false);
 
 
@@ -215,20 +240,52 @@ public class PojavLauncherActivity extends BaseLauncherActivity
             }
         });
         changeLookAndFeel(PREF_HIDE_SIDEBAR);
+        initTabs(0);
+    }
+
+    /** Set the selection AND saves it as a shared preference */
+    private void setProfileSelection(int position){
+        mVersionSelector.setSelection(position);
+        LauncherPreferences.DEFAULT_PREF.edit()
+            .putString(LauncherPreferences.PREF_KEY_CURRENT_PROFILE,
+                mVersionSelector.getAdapter().getItem(position).toString())
+            .apply();
     }
 
     private void selectTabPage(int pageIndex){
         viewPager.setCurrentItem(pageIndex);
         setTabActive(pageIndex);
     }
+    public static String[] basicVersionList;
+    public static void setupBasicList(Context ctx) {
+        List<String> versions = new ArrayList<>();
+        final File fVers = new File(Tools.DIR_HOME_VERSION);
 
+        try {
+            if (fVers.listFiles().length < 1) {
+                throw new Exception(ctx.getString(R.string.error_no_version));
+            }
+
+            for (File fVer : fVers.listFiles()) {
+                if (fVer.isDirectory())
+                    versions.add(fVer.getName());
+            }
+        } catch (Exception e) {
+            versions.add(ctx.getString(R.string.global_error) + ":");
+            versions.add(e.getMessage());
+
+        } finally {
+            basicVersionList = versions.toArray(new String[0]);
+            ExtraCore.setValue(ExtraConstants.VERSION_LIST,versions);
+        }
+    }
     private void pickAccount() {
         try {
             mProfile = PojavProfile.getCurrentProfileContent(this);
             accountFaceImageView.setImageBitmap(mProfile.getSkinFace());
 
             //TODO FULL BACKGROUND LOGIN
-            tvConnectStatus.setText(mProfile.accessToken.equals("0") ? R.string.mcl_account_offline : R.string.mcl_account_connected);
+            tvConnectStatus.setText(mProfile.accessToken.equals("0") ? R.string.mcl_account_local : R.string.mcl_account_connected);
         } catch(Exception e) {
             mProfile = new MinecraftAccount();
             Tools.showError(this, e, true);
@@ -272,10 +329,10 @@ public class PojavLauncherActivity extends BaseLauncherActivity
 
     protected void initTabs(int activeTab){
         final Handler handler = new Handler(Looper.getMainLooper());
-        handler.post(() -> {
+        handler.postDelayed(() -> {
             //Do something after 100ms
             selectTabPage(activeTab);
-        });
+        }, 100);
     }
 
     private void changeLookAndFeel(boolean useOldLook){
@@ -340,7 +397,7 @@ public class PojavLauncherActivity extends BaseLauncherActivity
         }else{
             super.onBackPressed();
             //additional code
-            ExtraCore.removeExtraListenerFromValue("back_preference", backPreferenceListener);
+            ExtraCore.removeExtraListenerFromValue(ExtraConstants.BACK_PREFERENCE, backPreferenceListener);
             finish();
         }
     }

@@ -5,12 +5,17 @@ import android.os.Looper;
 
 import net.kdt.pojavlaunch.*;
 import android.content.*;
+import android.view.Choreographer;
 
 public class CallbackBridge {
+    public static Choreographer sChoreographer = Choreographer.getInstance();
+    private static boolean isGrabbing = false;
+    private static long lastGrabTime = System.currentTimeMillis();
     public static final int ANDROID_TYPE_GRAB_STATE = 0;
     
     public static final int CLIPBOARD_COPY = 2000;
     public static final int CLIPBOARD_PASTE = 2001;
+    public static final int CLIPBOARD_OPEN = 2002;
     
     public static volatile int windowWidth, windowHeight;
     public static volatile int physicalWidth, physicalHeight;
@@ -20,12 +25,9 @@ public class CallbackBridge {
     public volatile static boolean holdingAlt, holdingCapslock, holdingCtrl,
             holdingNumlock, holdingShift;
 
-
     public static void putMouseEventWithCoords(int button, float x, float y) {
         putMouseEventWithCoords(button, true, x, y);
-        Handler handler = new Handler(Looper.getMainLooper());
-        handler.postDelayed(() -> putMouseEventWithCoords(button, false, x, y), 22);
-
+        sChoreographer.postFrameCallbackDelayed(l -> putMouseEventWithCoords(button, false, x, y), 33);
     }
     
     public static void putMouseEventWithCoords(int button, boolean isDown, float x, float y /* , int dz, long nanos */) {
@@ -36,9 +38,10 @@ public class CallbackBridge {
 
     public static void sendCursorPos(float x, float y) {
         if (!threadAttached) {
+            nativeSetUseInputStackQueue(BaseMainActivity.isInputStackCall);
             threadAttached = CallbackBridge.nativeAttachThreadToOther(true, BaseMainActivity.isInputStackCall);
         }
-        
+
         DEBUG_STRING.append("CursorPos=").append(x).append(", ").append(y).append("\n");
         mouseX = x;
         mouseY = y;
@@ -117,8 +120,13 @@ public class CallbackBridge {
     }
 
     public static boolean isGrabbing() {
-        // return isGrabbing;
-        return nativeIsGrabbing();
+        // Avoid going through the JNI each time.
+        long currentTime = System.currentTimeMillis();
+        if (currentTime - lastGrabTime > 250){
+            isGrabbing = nativeIsGrabbing();
+            lastGrabTime = currentTime;
+        }
+        return isGrabbing;
     }
 
     // Called from JRE side
@@ -127,14 +135,17 @@ public class CallbackBridge {
             case CLIPBOARD_COPY:
                 BaseMainActivity.GLOBAL_CLIPBOARD.setPrimaryClip(ClipData.newPlainText("Copy", copy));
                 return null;
-                
+
             case CLIPBOARD_PASTE:
                 if (BaseMainActivity.GLOBAL_CLIPBOARD.hasPrimaryClip() && BaseMainActivity.GLOBAL_CLIPBOARD.getPrimaryClipDescription().hasMimeType(ClipDescription.MIMETYPE_TEXT_PLAIN)) {
                     return BaseMainActivity.GLOBAL_CLIPBOARD.getPrimaryClip().getItemAt(0).getText().toString();
                 } else {
                     return "";
                 }
-                
+
+            case CLIPBOARD_OPEN:
+                BaseMainActivity.openLink(copy);
+                return null;
             default: return null;
         }
     }
@@ -198,6 +209,7 @@ public class CallbackBridge {
         }
     }
 
+    public static native void nativeSetUseInputStackQueue(boolean useInputStackQueue);
     public static native boolean nativeAttachThreadToOther(boolean isAndroid, boolean isUsePushPoll);
 
     private static native boolean nativeSendChar(char codepoint);

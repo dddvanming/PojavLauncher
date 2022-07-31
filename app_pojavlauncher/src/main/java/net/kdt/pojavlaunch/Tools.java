@@ -23,6 +23,7 @@ import net.kdt.pojavlaunch.prefs.*;
 import net.kdt.pojavlaunch.utils.*;
 import net.kdt.pojavlaunch.value.*;
 import net.kdt.pojavlaunch.value.launcherprofiles.LauncherProfiles;
+import net.kdt.pojavlaunch.value.launcherprofiles.MinecraftProfile;
 
 import org.apache.commons.codec.binary.Hex;
 import org.apache.commons.codec.digest.DigestUtils;
@@ -50,6 +51,7 @@ public final class Tools {
     public static String MULTIRT_HOME;
     public static String LOCAL_RENDERER = null;
     public static int DEVICE_ARCHITECTURE;
+    public static String LAUNCHERPROFILES_RTPREFIX = "pojav://";
 
     // New since 3.3.1
     public static String DIR_ACCOUNT_NEW;
@@ -117,15 +119,21 @@ public final class Tools {
         }
 
         JMinecraftVersionList.Version versionInfo = Tools.getVersionInfo(null,versionName);
-        PerVersionConfig.update();
-        PerVersionConfig.VersionConfig pvcConfig = PerVersionConfig.configMap.get(versionName);
-
-        String gamedirPath;
-        if(pvcConfig != null && pvcConfig.gamePath != null && !pvcConfig.gamePath.isEmpty()) gamedirPath = pvcConfig.gamePath;
-        else gamedirPath = Tools.DIR_GAME_NEW;
-        if(pvcConfig != null && pvcConfig.jvmArgs != null && !pvcConfig.jvmArgs.isEmpty()) LauncherPreferences.PREF_CUSTOM_JAVA_ARGS = pvcConfig.jvmArgs;
+        String gamedirPath = Tools.DIR_GAME_NEW;
+            if(activity instanceof BaseMainActivity) {
+                LauncherProfiles.update();
+                MinecraftProfile minecraftProfile = ((BaseMainActivity)activity).minecraftProfile;
+                if(minecraftProfile == null) throw new Exception("Launching empty Profile");
+                if(minecraftProfile.gameDir != null && minecraftProfile.gameDir.startsWith(Tools.LAUNCHERPROFILES_RTPREFIX))
+                    gamedirPath = minecraftProfile.gameDir.replace(Tools.LAUNCHERPROFILES_RTPREFIX,Tools.DIR_GAME_HOME+"/");
+                if(minecraftProfile.javaArgs != null && !minecraftProfile.javaArgs.isEmpty())
+                    LauncherPreferences.PREF_CUSTOM_JAVA_ARGS = minecraftProfile.javaArgs;
+            }
         PojavLoginActivity.disableSplash(gamedirPath);
-        String[] launchArgs = getMinecraftArgs(profile, versionInfo, gamedirPath);
+        String[] launchArgs = getMinecraftClientArgs(profile, versionInfo, gamedirPath);
+
+        // Select the appropriate openGL version
+        OldVersionsUtils.selectOpenGlVersion(versionInfo);
 
         // ctx.appendlnToLog("Minecraft Args: " + Arrays.toString(launchArgs));
 
@@ -155,8 +163,13 @@ public final class Tools {
 */
 
         if (versionInfo.logging != null) {
-            javaArgList.add("-Dlog4j.configurationFile=" + Tools.DIR_GAME_NEW + "/" + versionInfo.logging.client.file.id);
+            String configFile = Tools.DIR_DATA + "/" + versionInfo.logging.client.file.id.replace("client", "log4j-rce-patch");
+            if (!new File(configFile).exists()) {
+                configFile = Tools.DIR_GAME_NEW + "/" + versionInfo.logging.client.file.id;
+            }
+            javaArgList.add("-Dlog4j.configurationFile=" + configFile);
         }
+        javaArgList.addAll(Arrays.asList(getMinecraftJVMArgs(versionName, gamedirPath)));
         javaArgList.add("-cp");
         javaArgList.add(getLWJGL3ClassPath() + ":" + launchClassPath);
 
@@ -169,7 +182,7 @@ public final class Tools {
     public static void getCacioJavaArgs(List<String> javaArgList, boolean isHeadless) {
         javaArgList.add("-Djava.awt.headless="+isHeadless);
         // Caciocavallo config AWT-enabled version
-        javaArgList.add("-Dcacio.managed.screensize=" + CallbackBridge.physicalWidth + "x" + CallbackBridge.physicalHeight);
+        javaArgList.add("-Dcacio.managed.screensize=" + AWTCanvasView.AWT_CANVAS_WIDTH + "x" + AWTCanvasView.AWT_CANVAS_HEIGHT);
         // javaArgList.add("-Dcacio.font.fontmanager=net.java.openjdk.cacio.ctc.CTCFontManager");
         javaArgList.add("-Dcacio.font.fontmanager=sun.awt.X11FontManager");
         javaArgList.add("-Dcacio.font.fontscaler=sun.font.FreetypeFontScaler");
@@ -190,7 +203,47 @@ public final class Tools {
         javaArgList.add(cacioClasspath.toString());
     }
 
-    public static String[] getMinecraftArgs(MinecraftAccount profile, JMinecraftVersionList.Version versionInfo, String strGameDir) {
+    public static String[] getMinecraftJVMArgs(String versionName, String strGameDir) {
+        JMinecraftVersionList.Version versionInfo = Tools.getVersionInfo(null, versionName, true);
+        // Parse Forge 1.17+ additional JVM Arguments
+        if (versionInfo.inheritsFrom == null || versionInfo.arguments == null || versionInfo.arguments.jvm == null) {
+            return new String[0];
+        }
+
+        Map<String, String> varArgMap = new ArrayMap<>();
+        varArgMap.put("classpath_separator", ":");
+        varArgMap.put("library_directory", strGameDir + "/libraries");
+        varArgMap.put("version_name", versionInfo.id);
+
+        List<String> minecraftArgs = new ArrayList<String>();
+        if (versionInfo.arguments != null) {
+            for (Object arg : versionInfo.arguments.jvm) {
+                if (arg instanceof String) {
+                    minecraftArgs.add((String) arg);
+                } else {
+                    /*
+                     JMinecraftVersionList.Arguments.ArgValue argv = (JMinecraftVersionList.Arguments.ArgValue) arg;
+                     if (argv.values != null) {
+                     minecraftArgs.add(argv.values[0]);
+                     } else {
+
+                     for (JMinecraftVersionList.Arguments.ArgValue.ArgRules rule : arg.rules) {
+                     // rule.action = allow
+                     // TODO implement this
+                     }
+
+                     }
+                     */
+                }
+            }
+        }
+
+        String[] argsFromJson = JSONUtils.insertJSONValueList(minecraftArgs.toArray(new String[0]), varArgMap);
+        // Tools.dialogOnUiThread(this, "Result args", Arrays.asList(argsFromJson).toString());
+        return argsFromJson;
+    }
+
+    public static String[] getMinecraftClientArgs(MinecraftAccount profile, JMinecraftVersionList.Version versionInfo, String strGameDir) {
         String username = profile.username;
         String versionName = versionInfo.id;
         if (versionInfo.inheritsFrom != null) {
@@ -203,6 +256,7 @@ public final class Tools {
         gameDir.mkdirs();
 
         Map<String, String> varArgMap = new ArrayMap<>();
+        varArgMap.put("auth_session", profile.accessToken); // For legacy versions of MC
         varArgMap.put("auth_access_token", profile.accessToken);
         varArgMap.put("auth_player_name", username);
         varArgMap.put("auth_uuid", profile.profileId);
@@ -238,14 +292,17 @@ public final class Tools {
                 }
             }
         }
+        /*
         minecraftArgs.add("--width");
         minecraftArgs.add(Integer.toString(CallbackBridge.windowWidth));
         minecraftArgs.add("--height");
         minecraftArgs.add(Integer.toString(CallbackBridge.windowHeight));
+
         minecraftArgs.add("--fullscreenWidth");
         minecraftArgs.add(Integer.toString(CallbackBridge.windowWidth));
         minecraftArgs.add("--fullscreenHeight");
         minecraftArgs.add(Integer.toString(CallbackBridge.windowHeight));
+        */
         
         String[] argsFromJson = JSONUtils.insertJSONValueList(
             splitAndFilterEmpty(
@@ -275,11 +332,18 @@ public final class Tools {
                 strList.add(arg);
             }
         }
-        strList.add("--fullscreen");
+        //strList.add("--fullscreen");
         return strList.toArray(new String[0]);
     }
 
-    public static String artifactToPath(String group, String artifact, String version) {
+    public static String artifactToPath(String name) {
+        int idx = name.indexOf(":");
+        assert idx != -1;
+        int idx2 = name.indexOf(":", idx+1);
+        assert idx2 != -1;
+        String group = name.substring(0, idx);
+        String artifact = name.substring(idx+1, idx2);
+        String version = name.substring(idx2+1).replace(':','-');
         return group.replaceAll("\\.", "/") + "/" + artifact + "/" + version + "/" + artifact + "-" + version + ".jar";
     }
 
@@ -348,15 +412,16 @@ public final class Tools {
     public static DisplayMetrics getDisplayMetrics(Activity activity) {
         DisplayMetrics displayMetrics = new DisplayMetrics();
 
-        if(SDK_INT >= Build.VERSION_CODES.N && (activity.isInMultiWindowMode() || activity.isInPictureInPictureMode())
-        || PREF_NOTCH_SIZE == -1 ){
+        if(SDK_INT >= Build.VERSION_CODES.N && (activity.isInMultiWindowMode() || activity.isInPictureInPictureMode())){
             //For devices with free form/split screen, we need window size, not screen size.
             displayMetrics = activity.getResources().getDisplayMetrics();
         }else{
             if (SDK_INT >= Build.VERSION_CODES.R) {
                 activity.getDisplay().getRealMetrics(displayMetrics);
-            } else {
+            } else if(SDK_INT >= P) {
                  activity.getWindowManager().getDefaultDisplay().getRealMetrics(displayMetrics);
+            }else{ // Some old devices can have a notch despite it not being officially supported
+                activity.getWindowManager().getDefaultDisplay().getMetrics(displayMetrics);
             }
             if(!PREF_IGNORE_NOTCH){
                 //Remove notch width when it isn't ignored.
@@ -368,30 +433,27 @@ public final class Tools {
         return displayMetrics;
     }
 
-    public static void setFullscreen(Activity act) {
-        final View decorView = act.getWindow().getDecorView();
-        decorView.setOnSystemUiVisibilityChangeListener (new View.OnSystemUiVisibilityChangeListener() {
-                @Override
-                public void onSystemUiVisibilityChange(int visibility) {
-                    if ((visibility & View.SYSTEM_UI_FLAG_FULLSCREEN) == 0) {
-                        decorView.setSystemUiVisibility(
-                            View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-                            | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
-                            | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                            | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-                            | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN);
-                    }
-                }
-            });
+    public static void setFullscreen(Activity activity) {
+        final View decorView = activity.getWindow().getDecorView();
+        decorView.setOnSystemUiVisibilityChangeListener (visibility -> {
+            if ((visibility & View.SYSTEM_UI_FLAG_FULLSCREEN) == 0) {
+                decorView.setSystemUiVisibility(
+                View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN);
+            }
+        });
     }
 
     public static DisplayMetrics currentDisplayMetrics;
 
-    public static void updateWindowSize(Activity ctx) {
-        currentDisplayMetrics = getDisplayMetrics(ctx);
+    public static void updateWindowSize(Activity activity) {
+        currentDisplayMetrics = getDisplayMetrics(activity);
 
-        CallbackBridge.physicalWidth = (int) (currentDisplayMetrics.widthPixels);
-        CallbackBridge.physicalHeight = (int) (currentDisplayMetrics.heightPixels);
+        CallbackBridge.physicalWidth = currentDisplayMetrics.widthPixels;
+        CallbackBridge.physicalHeight = currentDisplayMetrics.heightPixels;
     }
 
     public static float dpToPx(float dp) {
@@ -514,18 +576,29 @@ public final class Tools {
         Intent browserIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
         act.startActivity(browserIntent);
     }
-
+    private static boolean checkRules(JMinecraftVersionList.Arguments.ArgValue.ArgRules[] rules) {
+        if(rules == null) return true; // always allow
+        for (JMinecraftVersionList.Arguments.ArgValue.ArgRules rule : rules) {
+            if (rule.action.equals("allow") && rule.os != null && rule.os.name.equals("osx")) {
+                return false; //disallow
+            }
+        }
+        return true; // allow if none match
+    }
     public static String[] generateLibClasspath(JMinecraftVersionList.Version info) {
         List<String> libDir = new ArrayList<String>();
-
         for (DependentLibrary libItem: info.libraries) {
-            String[] libInfos = libItem.name.split(":");
-            libDir.add(Tools.DIR_HOME_LIBRARY + "/" + Tools.artifactToPath(libInfos[0], libInfos[1], libInfos[2]));
+            if(!checkRules(libItem.rules)) continue;
+            libDir.add(Tools.DIR_HOME_LIBRARY + "/" + Tools.artifactToPath(libItem.name));
         }
         return libDir.toArray(new String[0]);
     }
 
     public static JMinecraftVersionList.Version getVersionInfo(BaseLauncherActivity bla, String versionName) {
+        return getVersionInfo(bla, versionName, false);
+    }
+
+    public static JMinecraftVersionList.Version getVersionInfo(BaseLauncherActivity bla, String versionName, boolean skipInheriting) {
         try {
             JMinecraftVersionList.Version customVer = Tools.GLOBAL_GSON.fromJson(read(DIR_HOME_VERSION + "/" + versionName + "/" + versionName + ".json"), JMinecraftVersionList.Version.class);
             for (DependentLibrary lib : customVer.libraries) {
@@ -533,7 +606,7 @@ public final class Tools {
                     customVer.optifineLib = lib;
                 }
             }
-            if (customVer.inheritsFrom == null || customVer.inheritsFrom.equals(customVer.id)) {
+            if (skipInheriting || customVer.inheritsFrom == null || customVer.inheritsFrom.equals(customVer.id)) {
                 return customVer;
             } else {
                 JMinecraftVersionList.Version inheritsVer = null;
@@ -658,16 +731,21 @@ public final class Tools {
         File fl = new File(dir);
 
         File[] files = fl.listFiles(File::isFile);
-
+        if(files == null) {
+            return null;
+            // The patch was a bit wrong...
+            // So, this may be null, why? Because this folder may not exist yet
+            // Or it may not have any files...
+            // Doesn't matter. We must check for that in the crash fragment.
+        }
         long lastMod = Long.MIN_VALUE;
         File choice = null;
         for (File file : files) {
-            if (file.lastModified() > lastMod) {
-                choice = file;
-                lastMod = file.lastModified();
+             if (file.lastModified() > lastMod) {
+                 choice = file;
+                 lastMod = file.lastModified();
             }
         }
-
         return choice;
     }
 

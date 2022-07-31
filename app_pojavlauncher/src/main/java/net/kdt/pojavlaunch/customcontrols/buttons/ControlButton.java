@@ -292,7 +292,7 @@ public class ControlButton extends androidx.appcompat.widget.AppCompatButton imp
                 case MotionEvent.ACTION_MOVE:
                     //Send the event to be taken as a mouse action
                     if(mProperties.passThruEnabled && CallbackBridge.isGrabbing()){
-                        MinecraftGLView v = ((ControlLayout) this.getParent()).findViewById(R.id.main_game_render_view);
+                        MinecraftGLSurface v = ((ControlLayout) this.getParent()).findViewById(R.id.main_game_render_view);
                         if (v != null) v.dispatchTouchEvent(event);
                     }
 
@@ -332,7 +332,7 @@ public class ControlButton extends androidx.appcompat.widget.AppCompatButton imp
                 case MotionEvent.ACTION_CANCEL: // 3
                 case MotionEvent.ACTION_POINTER_UP: // 6
                     if(mProperties.passThruEnabled){
-                        MinecraftGLView v = ((ControlLayout) this.getParent()).findViewById(R.id.main_game_render_view);
+                        MinecraftGLSurface v = ((ControlLayout) this.getParent()).findViewById(R.id.main_game_render_view);
                         if (v != null) v.dispatchTouchEvent(event);
                     }
                     if(mIsPointerOutOfBounds) ((ControlLayout) getParent()).onTouch(this, event);
@@ -391,7 +391,7 @@ public class ControlButton extends androidx.appcompat.widget.AppCompatButton imp
         float MIN_DISTANCE = Tools.dpToPx(8);
 
         if(button == this) return false;
-        if(com.google.android.material.math.MathUtils.dist(
+        if(net.kdt.pojavlaunch.utils.MathUtils.dist(
                 button.getX() + button.getWidth()/2f,
                 button.getY() + button.getHeight()/2f,
                 getX() + getWidth()/2f,

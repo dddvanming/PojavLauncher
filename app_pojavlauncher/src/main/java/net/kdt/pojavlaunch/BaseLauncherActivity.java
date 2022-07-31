@@ -1,5 +1,6 @@
 package net.kdt.pojavlaunch;
 
+import static net.kdt.pojavlaunch.Tools.ENABLE_DEV_FEATURES;
 import static net.kdt.pojavlaunch.Tools.getFileName;
 
 import android.app.*;
@@ -12,14 +13,20 @@ import android.widget.*;
 import androidx.annotation.Nullable;
 
 import java.io.*;
-
+import java.util.ArrayList;
+import java.util.Map;
+import net.kdt.pojavlaunch.extra.ExtraCore;
 import net.kdt.pojavlaunch.multirt.MultiRTConfigDialog;
 import net.kdt.pojavlaunch.multirt.MultiRTUtils;
 import net.kdt.pojavlaunch.prefs.*;
+import net.kdt.pojavlaunch.extra.ExtraConstants;
 import net.kdt.pojavlaunch.tasks.*;
 
 import androidx.appcompat.app.AlertDialog;
+
 import net.kdt.pojavlaunch.value.*;
+import net.kdt.pojavlaunch.value.launcherprofiles.LauncherProfiles;
+import net.kdt.pojavlaunch.value.launcherprofiles.MinecraftProfile;
 
 import org.apache.commons.io.IOUtils;
 
@@ -33,7 +40,7 @@ public abstract class BaseLauncherActivity extends BaseActivity {
     public JMinecraftVersionList mVersionList;
 	public MinecraftDownloaderTask mTask;
 	public MinecraftAccount mProfile;
-	public String[] mAvailableVersions;
+	//public String[] mAvailableVersions;
     
 	public boolean mIsAssetsProcessing = false;
     protected boolean canBack = false;
@@ -93,17 +100,45 @@ public abstract class BaseLauncherActivity extends BaseActivity {
     }
 
     public void launchGame(View v) {
-        if (!canBack && mIsAssetsProcessing) {
+        if (!canBack && mIsAssetsProcessing && ENABLE_DEV_FEATURES) {
             mIsAssetsProcessing = false;
             statusIsLaunching(false);
         } else if (canBack) {
             v.setEnabled(false);
             mTask = new MinecraftDownloaderTask(this);
-            mTask.execute(mProfile.selectedVersion);
-
+            LauncherProfiles.update();
+            String selectedProfile = LauncherPreferences.DEFAULT_PREF.getString(LauncherPreferences.PREF_KEY_CURRENT_PROFILE,"");
+            if (LauncherProfiles.mainProfileJson != null && LauncherProfiles.mainProfileJson.profiles != null && LauncherProfiles.mainProfileJson.profiles.containsKey(selectedProfile)) {
+                MinecraftProfile prof = LauncherProfiles.mainProfileJson.profiles.get(selectedProfile);
+                if (prof != null && prof.lastVersionId != null) {
+                    if (mProfile.accessToken.equals("0")) {
+                        String versionId = getVersionId(prof.lastVersionId);
+                        File verJsonFile = new File(Tools.DIR_HOME_VERSION,
+                            versionId + "/" + versionId + ".json");
+                        if (verJsonFile.exists()) {
+                            mTask.onPostExecute(null);
+                            return;
+                        }
+                        Tools.dialogOnUiThread(this,
+                                getString(R.string.global_error),
+                                getString(R.string.mcl_launch_error_localmode)
+                        );
+                    }else {
+                        mTask.execute(getVersionId(prof.lastVersionId));
+                    }
+                }
+            }
         }
     }
-    
+
+    public static String getVersionId(String input) {
+        Map<String,String> releaseTable = (Map<String,String>)ExtraCore.getValue(ExtraConstants.RELEASE_TABLE);
+        if(releaseTable == null || releaseTable.isEmpty()) return input;
+        if("latest-release".equals(input)) return releaseTable.get("release");
+        if("latest-snapshot".equals(input)) return releaseTable.get("snapshot");
+        return input;
+    }
+
     @Override
     public void onBackPressed() {
         if (canBack) {
@@ -118,10 +153,35 @@ public abstract class BaseLauncherActivity extends BaseActivity {
         Tools.updateWindowSize(this);
         System.out.println("call to onPostResume; E");
     }
-    
+
+    public static void updateVersionSpinner(Context ctx, ArrayList<String> value, Spinner mVersionSelector, String defaultSelection) {
+        if(value != null && value.size() > 0) {
+            ArrayAdapter<String> adapter = new ArrayAdapter<String>(ctx, android.R.layout.simple_spinner_item, value);
+            adapter.setDropDownViewResource(android.R.layout.simple_list_item_single_choice);
+            mVersionSelector.setAdapter(adapter);
+            mVersionSelector.setSelection(RefreshVersionListTask.selectAt(value, defaultSelection));
+            return;
+        }
+        mVersionSelector.setSelection(RefreshVersionListTask.selectAt(PojavLauncherActivity.basicVersionList, defaultSelection));
+    }
     @Override
     protected void onResume(){
         super.onResume();
+        new RefreshVersionListTask(this).execute();
+        if(listRefreshListener != null) {
+            LauncherPreferences.DEFAULT_PREF.unregisterOnSharedPreferenceChangeListener(listRefreshListener);
+        }
+        listRefreshListener = (sharedPreferences, key) -> {
+            if(key.startsWith("vertype_")) {
+                System.out.println("Verlist update needed!");
+                LauncherPreferences.PREF_VERTYPE_RELEASE = sharedPreferences.getBoolean("vertype_release",true);
+                LauncherPreferences.PREF_VERTYPE_SNAPSHOT = sharedPreferences.getBoolean("vertype_snapshot",false);
+                LauncherPreferences.PREF_VERTYPE_OLDALPHA = sharedPreferences.getBoolean("vertype_oldalpha",false);
+                LauncherPreferences.PREF_VERTYPE_OLDBETA = sharedPreferences.getBoolean("vertype_oldbeta",false);
+                new RefreshVersionListTask(this).execute();
+            }
+        };
+        LauncherPreferences.DEFAULT_PREF.registerOnSharedPreferenceChangeListener(listRefreshListener);
         System.out.println("call to onResume");
         final int uiOptions = View.SYSTEM_UI_FLAG_HIDE_NAVIGATION;
         final View decorView = getWindow().getDecorView();
@@ -130,20 +190,10 @@ public abstract class BaseLauncherActivity extends BaseActivity {
     }
 
     SharedPreferences.OnSharedPreferenceChangeListener listRefreshListener = null;
+    SharedPreferences.OnSharedPreferenceChangeListener profileEnableListener = null;
     @Override
     protected void onResumeFragments() {
         super.onResumeFragments();
-        if(listRefreshListener == null) {
-            final BaseLauncherActivity thiz = this;
-            listRefreshListener = (sharedPreferences, key) -> {
-                if(key.startsWith("vertype_")) {
-                    System.out.println("Verlist update needed!");
-                    new RefreshVersionListTask(thiz).execute();
-                }
-            };
-        }
-        LauncherPreferences.DEFAULT_PREF.registerOnSharedPreferenceChangeListener(listRefreshListener);
-        new RefreshVersionListTask(this).execute();
         System.out.println("call to onResumeFragments");
         mRuntimeConfigDialog = new MultiRTConfigDialog();
         mRuntimeConfigDialog.prepare(this);
@@ -175,7 +225,7 @@ public abstract class BaseLauncherActivity extends BaseActivity {
                 Thread t = new Thread(() -> {
                     try {
                         String name = getFileName(this, uri);
-                        MultiRTUtils.installRuntimeNamed(getContentResolver().openInputStream(uri), name,
+                        MultiRTUtils.installRuntimeNamed(getApplicationContext().getApplicationInfo().nativeLibraryDir, getContentResolver().openInputStream(uri), name,
                                 (resid, stuff) -> BaseLauncherActivity.this.runOnUiThread(
                                         () -> barrier.setMessage(BaseLauncherActivity.this.getString(resid, stuff))));
                         MultiRTUtils.postPrepare(BaseLauncherActivity.this, name);

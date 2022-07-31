@@ -1,5 +1,7 @@
 package net.kdt.pojavlaunch.tasks;
 
+import static net.kdt.pojavlaunch.Tools.ENABLE_DEV_FEATURES;
+
 import android.app.*;
 import android.content.*;
 import android.os.*;
@@ -14,6 +16,8 @@ import net.kdt.pojavlaunch.multirt.Runtime;
 import net.kdt.pojavlaunch.prefs.*;
 import net.kdt.pojavlaunch.utils.*;
 import net.kdt.pojavlaunch.value.*;
+import net.kdt.pojavlaunch.value.launcherprofiles.LauncherProfiles;
+import net.kdt.pojavlaunch.value.launcherprofiles.MinecraftProfile;
 
 import org.apache.commons.io.*;
 
@@ -88,39 +92,36 @@ public class MinecraftDownloaderTask extends AsyncTask<String, String, Throwable
                 verInfo = Tools.getVersionInfo(mActivity,p1[0]);
 
                 //Now we have the reliable information to check if our runtime settings are good enough
-                if(verInfo.javaVersion != null) { //1.17+
-                    PerVersionConfig.update();
-                    PerVersionConfig.VersionConfig cfg = PerVersionConfig.configMap.get(p1[0]);
-                    if(cfg == null) {
-                        cfg = new PerVersionConfig.VersionConfig();
-                        PerVersionConfig.configMap.put(p1[0],cfg);
+                if(verInfo.javaVersion != null && !verInfo.javaVersion.component.equalsIgnoreCase("jre-legacy")) { //1.17+
+                    LauncherProfiles.update();
+                    MinecraftProfile minecraftProfile = LauncherProfiles.mainProfileJson.profiles.get(LauncherPreferences.DEFAULT_PREF.getString(LauncherPreferences.PREF_KEY_CURRENT_PROFILE,""));
+                    if(minecraftProfile == null) throw new SilentException();
+                    String selectedRuntime = null;
+                    if(minecraftProfile.javaDir != null && minecraftProfile.javaDir.startsWith(Tools.LAUNCHERPROFILES_RTPREFIX)) {
+                        selectedRuntime = minecraftProfile.javaDir.substring(Tools.LAUNCHERPROFILES_RTPREFIX.length());
                     }
-
-                     Runtime runtime = cfg.selectedRuntime != null?MultiRTUtils.read(cfg.selectedRuntime):MultiRTUtils.read(LauncherPreferences.PREF_DEFAULT_RUNTIME);
-                     if(runtime.javaVersion < verInfo.javaVersion.majorVersion) {
+                    Runtime runtime = selectedRuntime != null?MultiRTUtils.read(selectedRuntime):MultiRTUtils.read(LauncherPreferences.PREF_DEFAULT_RUNTIME);
+                    if(runtime.javaVersion < verInfo.javaVersion.majorVersion) {
                          String appropriateRuntime = MultiRTUtils.getNearestJreName(verInfo.javaVersion.majorVersion);
                          if(appropriateRuntime != null) {
-                             cfg.selectedRuntime = appropriateRuntime;
-                             PerVersionConfig.update();
+                             if(JRE17Util.isInternalNewJRE(appropriateRuntime)) {
+                                 JRE17Util.checkInternalNewJre(mActivity, ((resId, stuff) -> publishProgress("0",mActivity.getString(resId,stuff))));
+                             }
+                             minecraftProfile.javaDir = Tools.LAUNCHERPROFILES_RTPREFIX+appropriateRuntime;
+                             LauncherProfiles.update();
                          }else{
-                             mActivity.runOnUiThread(()->{
-                                 AlertDialog.Builder bldr = new AlertDialog.Builder(mActivity);
-                                 bldr.setTitle(R.string.global_error);
-                                 bldr.setMessage(mActivity.getString(R.string.multirt_nocompartiblert, verInfo.javaVersion.majorVersion));
-                                 bldr.setPositiveButton(android.R.string.ok,(dialog, which)->{
-                                     dialog.dismiss();
-                                 });
-                                 bldr.show();
-                             });
-                             throw new SilentException();
+                             if(verInfo.javaVersion.majorVersion <= 17) { // there's a chance we have an internal one for this case
+                                 if(!JRE17Util.checkInternalNewJre(mActivity, ((resId, stuff) -> publishProgress("0",mActivity.getString(resId,stuff)))))
+                                     showRuntimeFail();
+                                 else {
+                                     minecraftProfile.javaDir = Tools.LAUNCHERPROFILES_RTPREFIX+JRE17Util.NEW_JRE_NAME;
+                                     LauncherProfiles.update();
+                                 }
+                             }else showRuntimeFail();
                          }
                      } //if else, we are satisfied
                 }
-                { //run the checks to detect if we have a *brand new* engine
-                    int mcReleaseDate = Integer.parseInt(verInfo.releaseTime.substring(0, 10).replace("-", ""));
-                    if(mcReleaseDate > 20210225 && verInfo.javaVersion != null && verInfo.javaVersion.majorVersion > 15)
-                        V117CompatUtil.runCheck(p1[0],mActivity);
-                }
+
                 try {
                     assets = downloadIndex(verInfo.assets, new File(Tools.ASSETS_PATH, "indexes/" + verInfo.assets + ".json"));
                 } catch (IOException e) {
@@ -131,8 +132,12 @@ public class MinecraftDownloaderTask extends AsyncTask<String, String, Throwable
 
                 // Patch the Log4J RCE (CVE-2021-44228)
                 if (verInfo.logging != null) {
-                    outLib = new File(Tools.DIR_GAME_NEW, verInfo.logging.client.file.id);
-                    if (outLib.exists()) {
+                    outLib = new File(Tools.DIR_DATA, verInfo.logging.client.file.id.replace("client", "log4j-rce-patch"));
+                    boolean useLocal = outLib.exists();
+                    if (!useLocal) {
+                        outLib = new File(Tools.DIR_GAME_NEW, verInfo.logging.client.file.id);
+                    }
+                    if (outLib.exists() && !useLocal) {
                         if(LauncherPreferences.PREF_CHECK_LIBRARY_SHA) {
                             if(!Tools.compareSHA1(outLib,verInfo.logging.client.file.sha1)) {
                                 outLib.delete();
@@ -171,8 +176,7 @@ public class MinecraftDownloaderTask extends AsyncTask<String, String, Throwable
                         publishProgress("1", "Ignored " + libItem.name);
                         //Thread.sleep(100);
                     } else {
-                        String[] libInfo = libItem.name.split(":");
-                        String libArtifact = Tools.artifactToPath(libInfo[0], libInfo[1], libInfo[2]);
+                        String libArtifact = Tools.artifactToPath(libItem.name);
                         outLib = new File(Tools.DIR_HOME_LIBRARY + "/" + libArtifact);
                         outLib.getParentFile().mkdirs();
 
@@ -239,7 +243,8 @@ public class MinecraftDownloaderTask extends AsyncTask<String, String, Throwable
             }
 
             mActivity.mIsAssetsProcessing = true;
-            mActivity.mPlayButton.post(new Runnable(){
+            if(ENABLE_DEV_FEATURES){
+                mActivity.mPlayButton.post(new Runnable(){
 
                     @Override
                     public void run()
@@ -248,6 +253,8 @@ public class MinecraftDownloaderTask extends AsyncTask<String, String, Throwable
                         mActivity.mPlayButton.setEnabled(true);
                     }
                 });
+            }
+
                 
             if (assets == null) {
                 return null;
@@ -271,6 +278,18 @@ public class MinecraftDownloaderTask extends AsyncTask<String, String, Throwable
             return throwable;
         }
     }
+     private void showRuntimeFail() throws SilentException{
+         mActivity.runOnUiThread(()->{
+             AlertDialog.Builder bldr = new AlertDialog.Builder(mActivity);
+             bldr.setTitle(R.string.global_error);
+             bldr.setMessage(mActivity.getString(R.string.multirt_nocompartiblert, verInfo.javaVersion.majorVersion));
+             bldr.setPositiveButton(android.R.string.ok,(dialog, which)->{
+                 dialog.dismiss();
+             });
+             bldr.show();
+         });
+         throw new SilentException();
+     }
     private int addProgress = 0;
     public static class SilentException extends Exception{}
     public void zeroProgress() {
@@ -358,7 +377,7 @@ public class MinecraftDownloaderTask extends AsyncTask<String, String, Throwable
     }
 
     @Override
-    protected void onPostExecute(Throwable p1)
+    public void onPostExecute(Throwable p1)
     {
         mActivity.mPlayButton.setText("Play");
         mActivity.mPlayButton.setEnabled(true);
@@ -378,6 +397,8 @@ public class MinecraftDownloaderTask extends AsyncTask<String, String, Throwable
                 mainIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_DOCUMENT);
                 mainIntent.addFlags(Intent.FLAG_ACTIVITY_MULTIPLE_TASK);
                 mActivity.startActivity(mainIntent);
+                mActivity.finish();
+                Log.i("ActCheck","mainActivity finishing="+mActivity.isFinishing()+", destroyed="+mActivity.isDestroyed());
             }
             catch (Throwable e) {
                 Tools.showError(mActivity, e);
@@ -440,10 +461,13 @@ public class MinecraftDownloaderTask extends AsyncTask<String, String, Throwable
                 JAssetInfo asset = assetsObjects.get(assetKey);
                 assetsSizeBytes+=asset.size;
                 String assetPath = asset.hash.substring(0, 2) + "/" + asset.hash;
-                File outFile = assets.mapToResources ?new File(objectsDir,"/"+assetKey):new File(objectsDir, assetPath);
+                File outFile = assets.mapToResources ?new File(outputDir,"/"+assetKey):new File(objectsDir, assetPath);
                 boolean skip = outFile.exists();// skip if the file exists
-                if(LauncherPreferences.PREF_CHECK_LIBRARY_SHA)  //if sha checking is enabled
-                    if(skip) skip = Tools.compareSHA1(outFile, asset.hash); //check hash
+                if(LauncherPreferences.PREF_CHECK_LIBRARY_SHA && skip){
+                    //if sha checking is enabled
+                    skip = Tools.compareSHA1(outFile, asset.hash); //check hash
+                }
+
                 if(skip) {
                     downloadedSize.addAndGet(asset.size);
                 }else{
